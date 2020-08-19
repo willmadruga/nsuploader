@@ -1,0 +1,84 @@
+#!/usr/bin/env bb
+;;-*- mode: clojure -*-
+
+;; Netsuite is dropping Basic Authentication in 2021.1
+;; TODO: rewrite using TBA, OAUTH0
+;;       lib: https://github.com/mattrepl/clj-oauth
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; 
+;; ns-upload: Uploads a file to a Netsuite account.
+;; RESTlet expects file's path to start from SuiteApps (so it knows where to put the file in Netsuite)
+;; I currently call this script from emacs to upload the file I am editing in current buffer
+;;
+;; #+BEGIN_SRC emacs-lisp
+;;   (defun upload-to-netsuite ()
+;;     "Send buffer to Netsuite."
+;;     (interactive)
+;;     (let ((cmd (concat "ns-upload" " " (buffer-file-name))))
+;;       (message (shell-command-to-string cmd))))
+;; #+END_SRC
+
+;; Utils ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defmacro with-param
+  "Calls a list of functions passing given parameter"
+  [p fn-list]
+  `(for [fn ~fn-list] (fn ~p)))
+
+(defn exec-path
+  "Returns current executing path"
+  []
+  (str/join "/" (pop (str/split *file* #"/"))))
+
+(defn encode-file
+  "Base64 encode file"
+  [file]
+  (.encodeToString (java.util.Base64/getEncoder) (.getBytes (with-open [r (io/reader file)] (slurp r)))))
+
+(def missing-input "Missing input file")
+
+;; Config ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defn load-config
+  "Load configuration"
+  []
+  (edn/read-string (slurp (io/reader (apply str [(exec-path) "/config.edn"] )))))
+
+;; Netsuite ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defn build-ns-url
+  "Builds account-specific Netsuite URL for RESTlet execution"
+  [conf]
+  (apply str ["https://"
+              (clojure.string/lower-case (clojure.string/replace (conf :account) "_" "-"))
+              ".restlets.api.netsuite.com/app/site/hosting/restlet.nl?"
+              "script=" (conf :script-id) "&"
+              "deploy=" (conf :deploy-id) ]))
+
+(defn build-ns-header
+  "Builds Netsuite Authorization Header"
+  [conf]
+  {"Content-Type" "application/json"
+   "Authorization"
+   (apply str ["NLAuth nlauth_account=" (conf :account)
+               ", nlauth_email=" (conf :email)
+               ", nlauth_signature=" (conf :passwd)
+               ", nlauth_role=" (conf :role)]) })
+
+(defn build-ns-payload
+  "Builds expected RESTlet payload"
+  [file]
+  (json/generate-string { :file file :content (encode-file file) }))
+
+;; Main ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+(if (some? *command-line-args*)
+  (let [req-options (with-param (load-config) [build-ns-url build-ns-header])]
+    ((curl/post (first req-options)
+                {
+                 :headers (second req-options)
+                 :body (first (with-param (first *command-line-args*) [build-ns-payload]))
+                 })
+     :body)) ;; response body
+  
+  (println missing-input))
