@@ -19,7 +19,14 @@
 ;;       (message (shell-command-to-string cmd))))
 ;; #+END_SRC
 
-;; Utils ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(ns script
+  (:require
+   (clojure.string :as str)
+   (clojure.java.io :as io)
+   (clojure.edn :as edn)
+   (babashka.curl :as curl)
+   (cheshire.core :as json))
+   (:import (java.util Base64)))
 
 (defmacro with-param
   "Calls a list of functions passing given parameter"
@@ -31,32 +38,22 @@
   []
   (str/join "/" (pop (str/split *file* #"/"))))
 
-(defn encode-file
-  "Base64 encode file"
-  [file]
-  (.encodeToString (java.util.Base64/getEncoder) (.getBytes (with-open [r (io/reader file)] (slurp r)))))
+(defn encode-file [file]
+  (.encodeToString (Base64/getEncoder) (.getBytes (with-open [r (io/reader file)] (slurp r)))))
 
 (def missing-input "Missing input file")
 
-;; Config ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defn load-config
-  "Load configuration"
-  []
+(defn load-config []
   (edn/read-string (slurp (io/reader (apply str [(exec-path) "/config.edn"] )))))
 
-;; Netsuite ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defn build-ns-url
-  "Builds account-specific Netsuite URL for RESTlet execution"
-  [conf]
+(defn build-ns-url [conf]
   (apply str ["https://"
               (clojure.string/lower-case (clojure.string/replace (conf :account) "_" "-"))
               ".restlets.api.netsuite.com/app/site/hosting/restlet.nl?"
               "script=" (conf :script-id) "&"
               "deploy=" (conf :deploy-id) ]))
 
-(defn build-ns-header
-  "Builds Netsuite Authorization Header"
-  [conf]
+(defn build-ns-header [conf]
   {"Content-Type" "application/json"
    "Authorization"
    (apply str ["NLAuth nlauth_account=" (conf :account)
@@ -64,21 +61,25 @@
                ", nlauth_signature=" (conf :passwd)
                ", nlauth_role=" (conf :role)]) })
 
-(defn build-ns-payload
-  "Builds expected RESTlet payload"
-  [file]
+(defn build-ns-payload [file]
   (json/generate-string { :file file :content (encode-file file) }))
 
-;; Main ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(let [req-options (with-param (load-config) [build-ns-url build-ns-header])]
+  ((curl/post (first req-options)
+             {
+              :headers (second req-options)
+              :body (first (with-param (first *command-line-args*) [build-ns-payload]))
+              }) :body))
 
-(if (some? *command-line-args*)
-  (let [req-options (with-param (load-config) [build-ns-url build-ns-header])]
-    ((curl/post (first req-options)
-                {
-                 :headers (second req-options)
-                 :body (first (with-param (first *command-line-args*) [build-ns-payload]))
-                 })
-     :body)) ;; response body
-  
-  (println missing-input))
+;; (def config (load-config))
+;; (def url (build-ns-url config))
+;; (def headers (build-ns-header config))
+;; (def payload (build-ns-payload (first *command-line-args*)))
+
+;; ((curl/post url
+;;             {
+;;              :headers headers
+;;              :body payload
+;;              }) :body)

@@ -1,0 +1,2 @@
+#!/bin/sh
+~/src/ns-uploader/bb/ns-upload $1
